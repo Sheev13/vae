@@ -11,8 +11,14 @@ class VAE(nn.Module):
         latent_dim: int,
         inference_hidden_dims: List[int] = [20, 20],
         q: str = "diagonal_gaussian",  # 'full_covariance_gaussian', 'inverse_autoregressive_flow',
+        decoder: str = "bernoulli",
     ):
         super().__init__()
+        self.data_dim = data_dim
+        self.latent_dim = latent_dim
+        self.inference_hidden_dims = inference_hidden_dims
+        self.q = q
+        self.decoder = decoder
 
 
 class MLP(nn.Module):
