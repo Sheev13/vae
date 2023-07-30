@@ -64,9 +64,6 @@ class VAE(nn.Module):
             covariance_matrix=prior_std**2 * torch.eye(latent_dim),
         )
 
-    def _likelihood_activation(y: torch.Tensor) -> torch.distributions.Distribution:
-        assert len(y.shape) == 3
-
     def forward(self, x: torch.Tensor, num_samples: int = 1):
         assert len(x.shape) == 3
         assert x.shape[-2:] == self.image_dims
@@ -88,7 +85,18 @@ class VAE(nn.Module):
         return q, z, p
 
     def elbo(self, x: torch.Tensor, num_samples: int = 1):
-        pass
+        batch_size = x.shape[0]
+        q, z, p = self(x, num_samples=num_samples)
+        kl = torch.distributions.kl.kl_divergence(q, self.prior).sum()
+        exp_ll = p.log_prob(
+            x.view(batch_size, self.num_pixels).unsqueeze(1).repeat(1, num_samples, 1)
+        ).mean(1).sum(-1)
+        # TODO: sort out sum()'s and mean()'s here to ensure consistent tensor ranks
+        return exp_ll - kl.unsqueeze(0).repeat(batch_size)
+
+
+    def loss(self, x: torch.Tensor, num_samples: int = 1):
+        return - self.elbo(x, num_samples)
 
 
 class GaussianLikelihood(nn.Module):
