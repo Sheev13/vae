@@ -54,7 +54,7 @@ class VAE(nn.Module):
             + [self.latent_dim * 2]
         )
 
-        self.output_multiplier = 1
+        self.output_multiplier = 1  #TODO: move this into likelihood class as attriute
         if likelihood == "gaussian" and noise == "heteroscedastic":
             self.output_multiplier = 2
 
