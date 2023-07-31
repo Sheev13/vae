@@ -54,7 +54,7 @@ class VAE(nn.Module):
             + [self.latent_dim * 2]
         )
 
-        self.output_multiplier = 1  #TODO: move this into likelihood class as attriute
+        self.output_multiplier = 1  # TODO: move this into likelihood class as attribute
         if likelihood == "gaussian" and noise == "heteroscedastic":
             self.output_multiplier = 2
 
@@ -110,7 +110,8 @@ class VAE(nn.Module):
 
         return q, z, p
 
-    def elbo(self, x: torch.Tensor, num_samples: int = 1):
+    def elbo(self, x: torch.Tensor, num_samples: int = 1):  # TODO: add metrics
+        metrics = {}
         batch_size = x.shape[0]
         q, _, p = self(x, num_samples=num_samples)
         kl = torch.distributions.kl.kl_divergence(q, self.prior).sum()
@@ -123,10 +124,11 @@ class VAE(nn.Module):
             .mean(1)
             .sum(-1)
         )
-        return exp_ll - kl.unsqueeze(0).repeat(batch_size)
-
-    def loss(self, x: torch.Tensor, num_samples: int = 1):
-        return -self.elbo(x, num_samples)
+        elbo = exp_ll - kl.unsqueeze(0).repeat(batch_size)
+        metrics["elbo"] = elbo.mean()
+        metrics["ll"] = exp_ll.mean()
+        metrics["kl"] = kl
+        return elbo, metrics
 
 
 class GaussianLikelihood(
@@ -228,3 +230,6 @@ class MLP(nn.Module):
         return torch.distributions.MultivariateNormal(
             loc, torch.diag_embed(logvar.exp() + 1e-8)
         )
+
+
+# TODO: implement CNN to improve performance on MNIST / CelebA (eventually)
