@@ -37,13 +37,14 @@ class VAE(nn.Module):
         enc_cnn_chans: Optional[List[int]] = [32, 64],
         dec_mlp_hidden_dims: Optional[List[int]] = [50, 50],
         dec_cnn_chans: Optional[List[int]] = [32, 64],
-        kernel_size: Optional[int] = 3,
+        kernel_size: Optional[int] = 4,
         posterior_form: str = "diagonal_gaussian",  # 'full_covariance_gaussian',
         likelihood: str = "gaussian",  # 'bernoulli'
         noise: str = "heteroscedastic",  # 'homoscedastic'
-        noise_log_std: float = 0.1,
+        noise_std: float = 0.1,
         train_noise: bool = False,
         prior_std: torch.Tensor = torch.tensor(1.0),
+        likelihood_activation: nn.Module = nn.Sigmoid(),
         nonlinearity: nn.Module = nn.ReLU(),
     ):
         super().__init__()
@@ -62,35 +63,36 @@ class VAE(nn.Module):
         else:
             raise NotImplementedError("Selected posterior not yet implemented")
 
-        self.output_multiplier = 1  # TODO: move this into likelihood class as attribute
-        if likelihood == "gaussian" and noise == "heteroscedastic":
-            self.output_multiplier = 2
-
-        self.dec_dims = (
-            [self.latent_dim]
-            + dec_mlp_hidden_dims
-            + [self.num_pixels * self.colour_channels * self.output_multiplier]
-        )
-
         if likelihood == "gaussian":
             self.likelihood = GaussianLikelihood(
-                noise=noise, log_std=noise_log_std, train_noise=train_noise
+                noise=noise, std=noise_std, train_noise=train_noise, activation=likelihood_activation
             )
         else:
             raise NotImplementedError("Likelihood chosen not yet implemented")
 
         self.encoder = Encoder(
-            enc_architecture,
-            image_dims,
-            colour_channels,
-            enc_mlp_hidden_dims,
-            enc_cnn_chans,
-            kernel_size,
-            latent_dim,
-            self.posterior,
-            nonlinearity,
+            architecture=enc_architecture,
+            image_dims=image_dims,
+            colour_channels=colour_channels,
+            mlp_hidden_dims=enc_mlp_hidden_dims,
+            cnn_chans=enc_cnn_chans,
+            kernel_size=kernel_size,
+            latent_dim=latent_dim,
+            posterior=self.posterior,
+            nonlinearity=nonlinearity,
         )
-        self.decoder = MLP(dims=self.dec_dims, nonlinearity=self.nonlinearity)
+
+        self.decoder = Decoder(
+            architecture=dec_architecture,
+            image_dims=image_dims,
+            colour_channels=colour_channels,
+            mlp_hidden_dims=dec_mlp_hidden_dims,
+            cnn_chans=dec_cnn_chans,
+            kernel_size=kernel_size,
+            latent_dim=latent_dim,
+            likelihood=self.likelihood,
+            nonlinearity=nonlinearity,
+        )
 
         self.prior = torch.distributions.MultivariateNormal(
             loc=torch.zeros(latent_dim),
@@ -104,60 +106,53 @@ class VAE(nn.Module):
         batch_size = x.shape[0]
 
         q = self.encoder(x)
+
         z = q.rsample(sample_shape=torch.Size([num_samples])).permute(
             1, 0, 2
-        )  # reparameterisation trick
+        )  # reparameterisation trick implemented implicitly here
 
         assert len(z.shape) == 3
         assert z.shape[0] == batch_size
         assert z.shape[1] == num_samples
         assert z.shape[2] == self.latent_dim
 
-        # finished implementation refactor up to here in the pipeline
-        # TODO: refactor from here to end including decoder and likelihood
+        l = self.decoder(z)
+        return q, z, l
 
-        y = self.decoder(
-            z.reshape(batch_size * num_samples, self.latent_dim),
-        ).view(
-            batch_size,
-            num_samples,
-            self.num_pixels * self.colour_channels * self.output_multiplier,
-        )
-
-        p = self.likelihood.activate(y)
-
-        return q, z, p
-
-    def elbo(self, x: torch.Tensor, num_samples: int = 1):  # TODO: add metrics
+    def elbo(self, x: torch.Tensor, num_samples: int = 1):
         metrics = {}
         batch_size = x.shape[0]
-        q, _, p = self(x, num_samples=num_samples)
-        kl = torch.distributions.kl.kl_divergence(q, self.prior).sum()
+        q, _, l = self(x, num_samples=num_samples)
+        kl = torch.distributions.kl.kl_divergence(q, self.prior)
         exp_ll = (
-            p.log_prob(
-                x.view(batch_size, self.num_pixels * self.colour_channels)
-                .unsqueeze(1)
-                .repeat(1, num_samples, 1)
-            )
-            .mean(1)
-            .sum(-1)
+            l.log_prob(x.unsqueeze(1).repeat(1, num_samples, 1, 1, 1))
+            .mean(1)  # average over all samples
+            .sum(dim=(1, 2, 3))  # sum over all pixels and colours
         )
-        elbo = exp_ll - kl.unsqueeze(0).repeat(batch_size)
+        elbo = exp_ll - kl
         metrics["elbo"] = elbo.mean()
         metrics["ll"] = exp_ll.mean()
-        metrics["kl"] = kl
+        metrics["kl"] = kl.mean()
+        if self.likelihood.noise == 'homoscedastic':
+            metrics["noise"] = self.likelihood.std
+        metrics["MAE"] = (l.loc - x).abs().mean()
         return elbo, metrics
 
+    def generate(self, z: torch.Tensor) -> torch.distributions.Distribution:
+        for _ in range(3 - len(z.shape)):
+            z = z.unsqueeze(0)
+        return self.decoder(z)
 
-class Encoder(nn.module):
+
+class Encoder(nn.Module):
     def __init__(
         self,
-        architecture: str,  # 'mlp' or 'cnn'
+        architecture: str = "cnn",  # 'mlp' or 'cnn'
         image_dims: Tuple[int] = (28, 28),
         colour_channels: int = 1,
         mlp_hidden_dims: Optional[List[int]] = [50, 50],
         cnn_chans: Optional[List[int]] = [32, 64],
-        kernel_size: int = 3,
+        kernel_size: Optional[int] = 4,
         latent_dim: int = 16,
         posterior: nn.Module = DiagonalGaussian(),
         nonlinearity: nn.Module = nn.ReLU(),
@@ -170,7 +165,7 @@ class Encoder(nn.module):
         if architecture == "mlp":
             assert mlp_hidden_dims is not None
         if architecture == "cnn":
-            assert cnn_chans is not None
+            assert cnn_chans is not None and kernel_size is not None
 
         self.image_dims = image_dims
         self.colour_channels = colour_channels
@@ -181,6 +176,7 @@ class Encoder(nn.module):
         self.architecture = architecture
 
         if architecture == "mlp":
+            
             self.enc_dims = (
                 [self.num_pixels * self.colour_channels]
                 + mlp_hidden_dims
@@ -188,14 +184,20 @@ class Encoder(nn.module):
                     self.latent_dim * 2
                 ]  # 2 here assumes diagonal Gaussian latent variable posterior
             )
+            
             self.network = MLP(dims=self.enc_dims, nonlinearity=self.nonlinearity)
 
         elif architecture == "cnn":
+            
             if cnn_chans[0] != colour_channels:
                 cnn_chans = [colour_channels] + cnn_chans
-            encoding_cnn_chans = cnn_chans + [latent_dim * 2]
+            if cnn_chans[-1] == latent_dim:
+                cnn_chans[-1] = latent_dim * 2
+            if cnn_chans[-1] != latent_dim * 2:
+                cnn_chans.append(latent_dim * 2)
+                
             self.network = EncodingCNN(
-                channels=encoding_cnn_chans,
+                channels=cnn_chans,
                 kernel_size=kernel_size,
                 nonlinearity=self.nonlinearity,
             )
@@ -208,14 +210,100 @@ class Encoder(nn.module):
         elif self.architecture == "cnn":
             x = x.permute(
                 0, 3, 1, 2
-            )  # double check this, am just moving dim 3 to dim 1
+            )  # move colour channels to conv2d channels dimension
 
         x = self.network(x)
 
         assert len(x.shape) == 2
         assert x.shape[0] == batch_size
-        assert x.shape[1] == self.latent_dim
+        assert x.shape[1] == self.latent_dim * 2
 
         q = self.posterior(x)
 
         return q
+
+
+class Decoder(nn.Module):
+    def __init__(
+        self,
+        architecture: str = "cnn",  # 'mlp' or 'cnn'
+        image_dims: Tuple[int] = (28, 28),
+        colour_channels: int = 1,
+        mlp_hidden_dims: Optional[List[int]] = [50, 50],
+        cnn_chans: Optional[List[int]] = [32, 64],
+        kernel_size: int = 4,
+        latent_dim: int = 16,
+        likelihood: nn.Module = GaussianLikelihood(),
+        nonlinearity: nn.Module = nn.ReLU(),
+    ):
+        super().__init__()
+        if architecture not in ["mlp", "cnn"]:
+            raise NotImplementedError(
+                f"Only 'cnn' and 'mlp' are supported, not {architecture}."
+            )
+        if architecture == "mlp":
+            assert mlp_hidden_dims is not None
+        if architecture == "cnn":
+            assert cnn_chans is not None and kernel_size is not None
+
+        self.image_dims = image_dims
+        self.colour_channels = colour_channels
+        self.latent_dim = latent_dim
+        self.nonlinearity = nonlinearity
+        self.num_pixels = image_dims[0] * image_dims[1]
+        self.likelihood = likelihood
+        self.architecture = architecture
+
+        if architecture == "mlp":
+            
+            self.enc_dims = (
+                [self.latent_dim]
+                + mlp_hidden_dims
+                + [self.num_pixels * self.colour_channels * likelihood.multiplier]
+            )
+            
+            self.network = MLP(dims=self.enc_dims, nonlinearity=self.nonlinearity)
+
+        elif architecture == "cnn":
+
+            if cnn_chans[0] != latent_dim:
+                cnn_chans = [latent_dim] + cnn_chans
+            if cnn_chans[-1] == colour_channels:
+                cnn_chans[-1] = colour_channels * likelihood.multiplier
+            if cnn_chans[-1] != colour_channels * likelihood.multiplier:
+                cnn_chans.append(colour_channels * likelihood.multiplier)
+            
+            self.network = DecodingCNN(
+                image_dims=image_dims,
+                channels=cnn_chans,
+                kernel_size=kernel_size,
+                nonlinearity=self.nonlinearity,
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.distributions.Distribution:
+        batch_size = x.shape[0]
+        num_samples = x.shape[1]
+        assert x.shape[2] == self.latent_dim
+        assert len(x.shape) == 3
+
+        x = x.view(batch_size * num_samples, self.latent_dim)
+
+        if self.architecture == "cnn":
+            x = x.unsqueeze(-1).unsqueeze(-1)
+            
+        x = self.network(x)
+
+        if self.architecture == "cnn":
+            x = x.permute(0, 2, 3, 1)  # move colour channels dim to colour dimension
+
+        x = x.view(
+            batch_size,
+            num_samples,
+            self.image_dims[0],
+            self.image_dims[1],
+            self.colour_channels * self.likelihood.multiplier,
+        )
+
+        l = self.likelihood(x)
+
+        return l

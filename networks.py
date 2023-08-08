@@ -33,81 +33,183 @@ class MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-        
+
 class EncodingCNN(nn.Module):
     """Represents a convolutional neural net (CNN) for specific use in the encoder of the VAE
 
     Args:
-    
+
     """
 
     def __init__(
         self,
+        image_dims: Tuple[int] = (28, 28),
         channels: List[int] = [1, 32, 64, 16],
-        kernel_size: int = 3,
+        kernel_size: int = 4,
         nonlinearity: nn.Module = nn.ReLU(),
     ):
         super().__init__()
         
-        if len(channels) <= 3:
-            pooling_scale = 2
-        else:
-            pooling_scale = 3
         
+        ds = 2  # DownSampling factor
+        
+        
+        # automatic downsamping factor determination (ideally 2 for smoothness):
+
+        min_dim = min(image_dims)
+        for layer in range(len(channels)):
+            min_dim //= ds
+        if min_dim > 1:
+            ds = 3
+            
+            min_dim = min(image_dims)
+            for layer in range(len(channels)):
+                min_dim //= ds
+            if min_dim > 1:
+                raise ValueError("Invalid encoding CNN architecture; need more layers for downsampling purposes.")
+            
+            
+        # figure out layer at which downsampling should stop:
+        
+        limit_layer = len(channels) - 2
+        min_dim = min(image_dims)
+        for layer in range(len(channels)):
+            if min_dim // ds < 1:
+                limit_layer = layer - 1
+                break
+            min_dim //= ds
+            
+        
+        # alter the kernel size and compute corresponding paddings
+
+        if ds == 2 and kernel_size % 2 != 0:
+            warnings.warn("Kernel size being made even for downsampling factor of 2")
+            kernel_size += 1
+        if ds == 3 and kernel_size % 2 == 0:
+            warnings.warn("Kernel size being made odd for downsampling factor of 3")
+            kernel_size -= 1
+            
+        pad = (kernel_size - ds) // 2
+        same_pad = (kernel_size) // 2
+        
+        
+        # construct network
+
         net = []
         for i in range(len(channels) - 1):
-            net.append(nn.Conv2d(channels[i], channels[i+1], kernel_size, padding="same"))
-            if i < len(channels) - 1:
-                net.append(nn.AvgPool2d(pooling_scale))
-            else:
+            if i <= limit_layer:
+                net.append(
+                    nn.Conv2d(
+                        channels[i],
+                        channels[i + 1],
+                        kernel_size,
+                        stride=ds,
+                        padding=pad,
+                    )
+                )
+            if i == limit_layer:
                 net.append(nn.AdaptiveAvgPool2d(output_size=(1, 1)))
-            net.append(nonlinearity)
-        
+            if i > limit_layer:
+                net.append(
+                    nn.Conv2d(channels[i], channels[i + 1], kernel_size+1, padding=same_pad)
+                )
+            if i < len(channels) - 2:
+                net.append(nonlinearity)
+            # net.append(nonlinearity)
+
         self.net = nn.Sequential(*net)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze()
-            
+        # print(x.shape)
+        # for layer in self.net:
+        #     x = layer(x)
+        #     print(x.shape)
+        # return x.squeeze(-1).squeeze(-1)
+        return self.net(x).squeeze(-1).squeeze(-1)
+
 
 class DecodingCNN(nn.Module):
     """Represents a convolutional neural net (CNN) for specific use in the decoder of the VAE
 
     Args:
-    
+
     """
 
     def __init__(
         self,
         image_dims: Tuple[int] = (28, 28),
         channels: List[int] = [16, 64, 32, 1],
-        kernel_size: int = 3,
+        kernel_size: int = 4,
         nonlinearity: nn.Module = nn.ReLU(),
     ):
         super().__init__()
         
-        if len(channels) <= 3:
-            upsampling_scale = 2
-        else:
-            upsampling_scale = 3
+        us = 2  # UpSampling factor
         
+        
+        # automatic upsamping factor determination (ideally 2 for smoothness):
+        
+        if us**(len(channels)) < max(image_dims):  # allows the manual upsampling to have effective scale factor of at most 'us'
+            us = 3
+            if us**(len(channels)) < max(image_dims):  # allows the manual upsampling to have effective scale factor of at most 'us'
+                raise ValueError("Invalid decoding CNN architecture; need more layers for upsampling purposes.")
+
+
+        # figure out layer at which upsampling should stop:
+        
+        limit_layer = len(channels) - 2
+        max_dim = max(image_dims)
+        for layer in range(len(channels)):
+            if us ** (layer) > max_dim:
+                limit_layer = layer - 1
+                break
+            
+        
+        # alter the kernel size and compute corresponding paddings
+        
+        if us == 2 and kernel_size % 2 != 0:
+            warnings.warn("Kernel size being made even for upsampling factor of 2")
+            kernel_size += 1
+        if us == 3 and kernel_size % 2 == 0:
+            warnings.warn("Kernel size being made even for upsampling factor of 3")
+            kernel_size -= 1
+            
+        pad = (kernel_size - us) // 2
+        same_pad = (kernel_size) // 2
+        
+        
+        # construct network
+
         net = []
         for i in range(len(channels) - 1):
-            net.append(nn.Conv2d(channels[i], channels[i+1], kernel_size, padding="same"))
-            if i < len(channels) - 1:
-                net.append(nn.UpsamplingBilinear2d(scale_factor=upsampling_scale))
-            else:
-                if 2**(len(channels) - 1) <= min(image_dims):
-                    net.append(nn.UpsamplingBilinear2d(size=image_dims))
-                else: 
-                    warnings.warn("Warning: ")
-                    net.append(nn.AdaptiveAvgPool2d(output_size=image_dims))
-            net.append(nonlinearity)
-            
+            if i <= limit_layer:
+                net.append(
+                    nn.ConvTranspose2d(
+                        channels[i],
+                        channels[i + 1],
+                        kernel_size,
+                        stride=us,
+                        padding=pad,
+                    )
+                )
+            if i == limit_layer:
+                net.append(nn.Upsample(size=image_dims))
+            if i > limit_layer:
+                net.append(
+                    nn.ConvTranspose2d(
+                        channels[i], channels[i + 1], kernel_size+1, padding=same_pad
+                    )
+                )
+            if i < len(channels) - 2:
+                net.append(nonlinearity)
+
         self.net = nn.Sequential(*net)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # print(x.shape)
+        # for layer in self.net:
+        #     x = layer(x)
+        #     print(x.shape)
+        # print('\r\r')
+        # return x
         return self.net(x)
-        
-        
-        
-            

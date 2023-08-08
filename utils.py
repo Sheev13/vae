@@ -25,8 +25,8 @@ def train_model(
     early_stopping: bool = False,
     max_epochs: int = 1000,
     min_es_iters: int = 300,
-    ref_es_iters: int = 50,
-    smooth_es_iters: int = 50,
+    ref_es_iters: int = 100,
+    smooth_es_iters: int = 100,
     es_thresh: float = 1e-2,
     ):
     

@@ -7,7 +7,7 @@ class DiagonalGaussian(nn.Module):
 
     def __init__(self):
         super().__init__()
-        
+
     def forward(self, x: torch.Tensor) -> torch.distributions.Distribution:
         assert x.shape[-1] % 2 == 0
         loc, logvar = torch.split(x, x.shape[-1] // 2, dim=-1)
@@ -18,9 +18,9 @@ class DiagonalGaussian(nn.Module):
 
 class FullCovGaussian(nn.Module):
     """Converts the output of the VAE encoder to a full-covariance Gaussian approx. posterior"""
+
     def __init__(self):
         super().__init__()
-        
+
     def forward(self, x: torch.Tensor) -> torch.distributions.Distribution:
         pass
-    

@@ -18,41 +18,44 @@ class GaussianLikelihood(
 
     def __init__(
         self,
-        noise: str = "heteroscedastic",
-        log_std: float = 0.1,
+        noise: str = "pixelwise-heteroscedastic",
+        std: float = 0.1,
         train_noise: bool = False,
+        activation: nn.Module = nn.Sigmoid(),
     ):
         super().__init__()
+                
+        assert noise in (
+            'pixelwise-heteroscedastic',
+            'imagewise-heteroscedastic',
+            'homoscedastic'
+        ), 'typo in noise description: options are "pixelwise-heteroscedastic", "imagewise-heteroscedastic, or "homoscedastic"'
         self.noise = noise
-        self.log_std = nn.Parameter(torch.tensor(log_std), requires_grad=train_noise)
+        self.log_std = nn.Parameter(torch.tensor(std).log(), requires_grad=train_noise)
+        if noise == "homoscedastic":
+            self.multiplier = 1
+        elif noise.endswith("heteroscedastic"):
+            self.multiplier = 2
+        
+        self.activation = activation
 
     @property
     def std(self):
         return self.log_std.exp()
 
     def forward(self, y: torch.Tensor) -> torch.distributions.Distribution:
-        assert len(y.shape) == 3
 
-        if self.noise == "heteroscedastic":
+        if self.noise.endswith("heteroscedastic"):
             assert y.shape[-1] % 2 == 0
-            loc, logvar = torch.split(y, y.shape[-1] // 2, dim=-1)
-            return torch.distributions.MultivariateNormal(
-                loc, torch.diag_embed(logvar.exp() + 1e-8)
+            loc, log_std = torch.split(y, y.shape[-1] // 2, dim=-1)
+            if self.noise.startswith("imagewise"):
+                log_std = log_std[:,:,0,0,:].unsqueeze(2).unsqueeze(2)  # pick only one value for the whole image
+            loc = self.activation(loc)
+            return torch.distributions.Normal(
+                loc, log_std.exp()
             )
 
         elif self.noise == "homoscedastic":
-            cov = (
-                (torch.eye(y.shape[-1]) * self.std**2 + 1e-8)
-                .unsqueeze(0)
-                .unsqueeze(0)
-                .repeat(y.shape[0], y.shape[1], 1)
-            )
-            return torch.distributions.MultivariateNormal(y, cov)
-
-        else:
-            raise NotImplementedError(
-                'typo in noise description: options are "heteroscedastic" or "homoscedastic"'
-            )
-
-    def activate(self, y: torch.Tensor) -> torch.distributions.Distribution:
-        return self(y)
+            y = self.activation(y)
+            scale = torch.ones_like(y) * self.std
+            return torch.distributions.Normal(y, scale)
