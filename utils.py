@@ -28,6 +28,8 @@ def train_model(
     ref_es_iters: int = 100,
     smooth_es_iters: int = 100,
     es_thresh: float = 1e-2,
+    beta_nll: bool = False,
+    beta: float = 0.5
     ):
     
     assert ref_es_iters < min_es_iters
@@ -56,7 +58,7 @@ def train_model(
             dataset_iterator = iter(dataloader)
             batch = next(dataset_iterator)
 
-        elbo, metrics = model.elbo(batch, num_samples=num_samples)
+        elbo, metrics = model.elbo(batch, num_samples=num_samples, beta_nll=beta_nll, beta=beta)
         loss = - elbo
 
         batch_loss = loss.mean()

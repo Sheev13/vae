@@ -57,13 +57,13 @@ class EncodingCNN(nn.Module):
         # automatic downsamping factor determination (ideally 2 for smoothness):
 
         min_dim = min(image_dims)
-        for layer in range(len(channels)):
+        for layer in range(len(channels)-1):
             min_dim //= ds
         if min_dim > 1:
             ds = 3
             
             min_dim = min(image_dims)
-            for layer in range(len(channels)):
+            for layer in range(len(channels)-1):
                 min_dim //= ds
             if min_dim > 1:
                 raise ValueError("Invalid encoding CNN architecture; need more layers for downsampling purposes.")
@@ -83,10 +83,10 @@ class EncodingCNN(nn.Module):
         # alter the kernel size and compute corresponding paddings
 
         if ds == 2 and kernel_size % 2 != 0:
-            warnings.warn("Kernel size being made even for downsampling factor of 2")
+            warnings.warn(f"Kernel size being made even ({kernel_size+1}) for downsampling factor of 2")
             kernel_size += 1
         if ds == 3 and kernel_size % 2 == 0:
-            warnings.warn("Kernel size being made odd for downsampling factor of 3")
+            warnings.warn(f"Kernel size being made odd ({kernel_size-1}) for downsampling factor of 3")
             kernel_size -= 1
             
         pad = (kernel_size - ds) // 2
@@ -115,7 +115,6 @@ class EncodingCNN(nn.Module):
                 )
             if i < len(channels) - 2:
                 net.append(nonlinearity)
-            # net.append(nonlinearity)
 
         self.net = nn.Sequential(*net)
 
@@ -168,10 +167,10 @@ class DecodingCNN(nn.Module):
         # alter the kernel size and compute corresponding paddings
         
         if us == 2 and kernel_size % 2 != 0:
-            warnings.warn("Kernel size being made even for upsampling factor of 2")
+            warnings.warn(f"Kernel size being made even ({kernel_size+1}) for upsampling factor of 2")
             kernel_size += 1
         if us == 3 and kernel_size % 2 == 0:
-            warnings.warn("Kernel size being made even for upsampling factor of 3")
+            warnings.warn(f"Kernel size being made odd ({kernel_size-1}) for upsampling factor of 3")
             kernel_size -= 1
             
         pad = (kernel_size - us) // 2

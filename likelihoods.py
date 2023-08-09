@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from typing import List
+import warnings
 
 
 
@@ -24,11 +25,15 @@ class GaussianLikelihood(
         activation: nn.Module = nn.Sigmoid(),
     ):
         super().__init__()
+        
+        if noise == 'heteroscedastic':
+            noise = 'pixelwise-heteroscedastic'
+            warnings.warn("'heteroscedastic' noise is deprecated. Defaulting to 'pixelwise-heteroscedastic'.")
                 
         assert noise in (
             'pixelwise-heteroscedastic',
             'imagewise-heteroscedastic',
-            'homoscedastic'
+            'homoscedastic',
         ), 'typo in noise description: options are "pixelwise-heteroscedastic", "imagewise-heteroscedastic, or "homoscedastic"'
         self.noise = noise
         self.log_std = nn.Parameter(torch.tensor(std).log(), requires_grad=train_noise)
@@ -47,15 +52,22 @@ class GaussianLikelihood(
 
         if self.noise.endswith("heteroscedastic"):
             assert y.shape[-1] % 2 == 0
+            
+            # print(y.shape)
+            
             loc, log_std = torch.split(y, y.shape[-1] // 2, dim=-1)
+            loc = self.activation(loc)
+            
             if self.noise.startswith("imagewise"):
                 log_std = log_std[:,:,0,0,:].unsqueeze(2).unsqueeze(2)  # pick only one value for the whole image
-            loc = self.activation(loc)
+                
+            # print(loc.shape, log_std.shape)
+            
             return torch.distributions.Normal(
                 loc, log_std.exp()
             )
 
         elif self.noise == "homoscedastic":
-            y = self.activation(y)
+            loc = self.activation(y)
             scale = torch.ones_like(y) * self.std
-            return torch.distributions.Normal(y, scale)
+            return torch.distributions.Normal(loc, scale)

@@ -65,7 +65,10 @@ class VAE(nn.Module):
 
         if likelihood == "gaussian":
             self.likelihood = GaussianLikelihood(
-                noise=noise, std=noise_std, train_noise=train_noise, activation=likelihood_activation
+                noise=noise,
+                std=noise_std,
+                train_noise=train_noise,
+                activation=likelihood_activation,
             )
         else:
             raise NotImplementedError("Likelihood chosen not yet implemented")
@@ -119,23 +122,37 @@ class VAE(nn.Module):
         l = self.decoder(z)
         return q, z, l
 
-    def elbo(self, x: torch.Tensor, num_samples: int = 1):
+    def elbo(
+        self,
+        x: torch.Tensor,
+        num_samples: int = 1,
+        beta_nll: bool = False,
+        beta: float = 0.5,
+    ):
+        repeated_x = x.clone().unsqueeze(1).repeat(1, num_samples, 1, 1, 1)
         metrics = {}
-        batch_size = x.shape[0]
         q, _, l = self(x, num_samples=num_samples)
         kl = torch.distributions.kl.kl_divergence(q, self.prior)
-        exp_ll = (
-            l.log_prob(x.unsqueeze(1).repeat(1, num_samples, 1, 1, 1))
-            .mean(1)  # average over all samples
-            .sum(dim=(1, 2, 3))  # sum over all pixels and colours
-        )
-        elbo = exp_ll - kl
+        exp_ll = l.log_prob(repeated_x)
+        rmse = ((l.loc - repeated_x) ** 2).mean().sqrt()
+
+        # compute elbo and average over samples, sum over pixels/colours
+        if beta_nll:
+            elbo = ((exp_ll * l.scale.detach()) ** (2 * beta)
+                    ).mean(1).sum(dim=(1, 2, 3)) - kl
+        else:
+            elbo = exp_ll.mean(1).sum(dim=(1, 2, 3)) - kl
+        # elbo = - rmse - kl
+        
+        exp_ll = exp_ll.mean(1).sum(dim=(1, 2, 3))
+
+        # report batch-averaged metrics
         metrics["elbo"] = elbo.mean()
         metrics["ll"] = exp_ll.mean()
         metrics["kl"] = kl.mean()
-        if self.likelihood.noise == 'homoscedastic':
+        if self.likelihood.noise == "homoscedastic":
             metrics["noise"] = self.likelihood.std
-        metrics["MAE"] = (l.loc - x).abs().mean()
+        metrics["RMSE"] = rmse
         return elbo, metrics
 
     def generate(self, z: torch.Tensor) -> torch.distributions.Distribution:
@@ -176,7 +193,6 @@ class Encoder(nn.Module):
         self.architecture = architecture
 
         if architecture == "mlp":
-            
             self.enc_dims = (
                 [self.num_pixels * self.colour_channels]
                 + mlp_hidden_dims
@@ -184,18 +200,17 @@ class Encoder(nn.Module):
                     self.latent_dim * 2
                 ]  # 2 here assumes diagonal Gaussian latent variable posterior
             )
-            
+
             self.network = MLP(dims=self.enc_dims, nonlinearity=self.nonlinearity)
 
         elif architecture == "cnn":
-            
             if cnn_chans[0] != colour_channels:
                 cnn_chans = [colour_channels] + cnn_chans
             if cnn_chans[-1] == latent_dim:
                 cnn_chans[-1] = latent_dim * 2
             if cnn_chans[-1] != latent_dim * 2:
                 cnn_chans.append(latent_dim * 2)
-                
+
             self.network = EncodingCNN(
                 channels=cnn_chans,
                 kernel_size=kernel_size,
@@ -255,24 +270,22 @@ class Decoder(nn.Module):
         self.architecture = architecture
 
         if architecture == "mlp":
-            
             self.enc_dims = (
                 [self.latent_dim]
                 + mlp_hidden_dims
                 + [self.num_pixels * self.colour_channels * likelihood.multiplier]
             )
-            
+
             self.network = MLP(dims=self.enc_dims, nonlinearity=self.nonlinearity)
 
         elif architecture == "cnn":
-
             if cnn_chans[0] != latent_dim:
                 cnn_chans = [latent_dim] + cnn_chans
             if cnn_chans[-1] == colour_channels:
                 cnn_chans[-1] = colour_channels * likelihood.multiplier
             if cnn_chans[-1] != colour_channels * likelihood.multiplier:
                 cnn_chans.append(colour_channels * likelihood.multiplier)
-            
+
             self.network = DecodingCNN(
                 image_dims=image_dims,
                 channels=cnn_chans,
@@ -290,7 +303,7 @@ class Decoder(nn.Module):
 
         if self.architecture == "cnn":
             x = x.unsqueeze(-1).unsqueeze(-1)
-            
+
         x = self.network(x)
 
         if self.architecture == "cnn":
