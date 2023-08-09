@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from likelihoods import GaussianLikelihood
-from posteriors import DiagonalGaussian
+from posteriors import DiagonalGaussian, FullCovarianceGaussian
 from networks import MLP, EncodingCNN, DecodingCNN
 
 from typing import Tuple, Optional, List
@@ -60,6 +60,8 @@ class VAE(nn.Module):
 
         if posterior_form == "diagonal_gaussian":
             self.posterior = DiagonalGaussian()
+        elif posterior_form == "full_covariance_gaussian":
+            self.posterior = FullCovarianceGaussian(latent_dim)
         else:
             raise NotImplementedError("Selected posterior not yet implemented")
 
@@ -147,7 +149,10 @@ class VAE(nn.Module):
         exp_ll = exp_ll.mean(1).sum(dim=(1, 2, 3))
 
         # report batch-averaged metrics
-        metrics["elbo"] = elbo.mean()
+        elbo_metric_name = 'elbo'
+        if beta_nll:
+            elbo_metric_name = 'beta_nll_elbo'
+        metrics[elbo_metric_name] = elbo.mean()
         metrics["ll"] = exp_ll.mean()
         metrics["kl"] = kl.mean()
         if self.likelihood.noise == "homoscedastic":
@@ -197,8 +202,8 @@ class Encoder(nn.Module):
                 [self.num_pixels * self.colour_channels]
                 + mlp_hidden_dims
                 + [
-                    self.latent_dim * 2
-                ]  # 2 here assumes diagonal Gaussian latent variable posterior
+                    self.latent_dim * self.posterior.multiplier
+                ]
             )
 
             self.network = MLP(dims=self.enc_dims, nonlinearity=self.nonlinearity)
@@ -207,9 +212,9 @@ class Encoder(nn.Module):
             if cnn_chans[0] != colour_channels:
                 cnn_chans = [colour_channels] + cnn_chans
             if cnn_chans[-1] == latent_dim:
-                cnn_chans[-1] = latent_dim * 2
-            if cnn_chans[-1] != latent_dim * 2:
-                cnn_chans.append(latent_dim * 2)
+                cnn_chans[-1] = latent_dim * self.posterior.multiplier
+            if cnn_chans[-1] != latent_dim * self.posterior.multiplier:
+                cnn_chans.append(latent_dim * self.posterior.multiplier)
 
             self.network = EncodingCNN(
                 channels=cnn_chans,
@@ -231,7 +236,7 @@ class Encoder(nn.Module):
 
         assert len(x.shape) == 2
         assert x.shape[0] == batch_size
-        assert x.shape[1] == self.latent_dim * 2
+        assert x.shape[1] == self.latent_dim * self.posterior.multiplier
 
         q = self.posterior(x)
 
