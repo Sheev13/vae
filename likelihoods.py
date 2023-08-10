@@ -53,15 +53,11 @@ class GaussianLikelihood(
         if self.noise.endswith("heteroscedastic"):
             assert y.shape[-1] % 2 == 0
             
-            # print(y.shape)
-            
             loc, log_std = torch.split(y, y.shape[-1] // 2, dim=-1)
             loc = self.activation(loc)
             
             if self.noise.startswith("imagewise"):
                 log_std = log_std[:,:,0,0,:].unsqueeze(2).unsqueeze(2)  # pick only one value for the whole image
-                
-            # print(loc.shape, log_std.shape)
             
             return torch.distributions.Normal(
                 loc, log_std.exp()
@@ -71,3 +67,12 @@ class GaussianLikelihood(
             loc = self.activation(y)
             scale = torch.ones_like(y) * self.std
             return torch.distributions.Normal(loc, scale)
+        
+class BernoulliLikelihood(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.multiplier = 1
+        warnings.warn("Bernoulli likelihood requires no activation; user-defined activation is ignored.")
+        
+    def forward(self, y: torch.Tensor) -> torch.distributions.Distribution:
+        return torch.distributions.Bernoulli(logits=y)

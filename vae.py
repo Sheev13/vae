@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from likelihoods import GaussianLikelihood
+from likelihoods import GaussianLikelihood, BernoulliLikelihood
 from posteriors import DiagonalGaussian, FullCovarianceGaussian
 from networks import MLP, EncodingCNN, DecodingCNN
 
@@ -54,7 +54,6 @@ class VAE(nn.Module):
         self.num_pixels = image_dims[0] * image_dims[1]
         self.latent_dim = latent_dim
         self.posterior_form = posterior_form
-        self.likelihood = likelihood
         self.prior_std = prior_std
         self.nonlinearity = nonlinearity
 
@@ -72,6 +71,8 @@ class VAE(nn.Module):
                 train_noise=train_noise,
                 activation=likelihood_activation,
             )
+        elif likelihood == "bernoulli":
+            self.likelihood = BernoulliLikelihood()
         else:
             raise NotImplementedError("Likelihood chosen not yet implemented")
 
@@ -136,11 +137,18 @@ class VAE(nn.Module):
         q, _, l = self(x, num_samples=num_samples)
         kl = torch.distributions.kl.kl_divergence(q, self.prior)
         exp_ll = l.log_prob(repeated_x)
-        rmse = ((l.loc - repeated_x) ** 2).mean().sqrt()
+        if isinstance(self.likelihood, GaussianLikelihood):
+            rmse = ((l.loc - repeated_x) ** 2).mean().sqrt()
+        elif isinstance(self.likelihood, BernoulliLikelihood):
+            rmse = ((l.probs - repeated_x) ** 2).mean().sqrt() 
 
         # compute elbo and average over samples, sum over pixels/colours
         if beta_nll:
-            elbo = ((exp_ll * l.scale.detach()) ** (2 * beta)
+            if isinstance(self.likelihood, GaussianLikelihood):
+                var = l.scale ** 2
+            elif isinstance(self.likelihood, BernoulliLikelihood):
+                var = l.probs * (1 - l.probs)  # Bernoulli variance = p(1-p)
+            elbo = (exp_ll * (var.detach() ** beta)
                     ).mean(1).sum(dim=(1, 2, 3)) - kl
         else:
             elbo = exp_ll.mean(1).sum(dim=(1, 2, 3)) - kl
@@ -155,8 +163,9 @@ class VAE(nn.Module):
         metrics[elbo_metric_name] = elbo.mean()
         metrics["ll"] = exp_ll.mean()
         metrics["kl"] = kl.mean()
-        if self.likelihood.noise == "homoscedastic":
-            metrics["noise"] = self.likelihood.std
+        if isinstance(self.likelihood, GaussianLikelihood):
+            if self.likelihood.noise == "homoscedastic":
+                metrics["noise"] = self.likelihood.std
         metrics["RMSE"] = rmse
         return elbo, metrics
 
