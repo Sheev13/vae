@@ -13,8 +13,9 @@ class GaussianLikelihood(
 
     Args:
         noise: an option to model the noise as homoscedastic or heteroscedastic
-        log_std: the initial log standard deviation used if the noise is homoscedastic
+        std: the initial log standard deviation used if the noise is homoscedastic
         train_noise: an option to train the homoscedastic noise variance
+        activation: the activation that the mean is passed through for e.g. pixel clamping
     """
 
     def __init__(
@@ -69,6 +70,8 @@ class GaussianLikelihood(
             return torch.distributions.Normal(loc, scale)
         
 class BernoulliLikelihood(nn.Module):
+    """Converts the output of the VAE decoder to a Bernoulli likelihood function"""
+    
     def __init__(self):
         super().__init__()
         self.multiplier = 1

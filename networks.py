@@ -10,7 +10,7 @@ class MLP(nn.Module):
 
     Args:
         dims: a sequence of numbers specifying the number of neurons in each layer
-        nonlinearity: the choice of nonlinear activation functions acting between layers
+        nonlinearity: the choice of nonlinear activation function acting between layers
     """
 
     def __init__(
@@ -38,7 +38,10 @@ class EncodingCNN(nn.Module):
     """Represents a convolutional neural net (CNN) for specific use in the encoder of the VAE
 
     Args:
-
+        image_dims: the image dimensions
+        channels: the channels of each CNN layer
+        kernel_size: the size of kernel used for convolutions
+        nonlinearity: the choice of nonlinear activation function acting between layers
     """
 
     def __init__(
@@ -56,41 +59,54 @@ class EncodingCNN(nn.Module):
         
         # automatic downsamping factor determination (ideally 2 for smoothness):
 
-        min_dim = min(image_dims)
+        max_dim = max(image_dims)
         for layer in range(len(channels)-1):
-            min_dim //= ds
-        if min_dim > 1:
+            max_dim //= ds
+        if max_dim > 1:
             ds = 3
             
-            min_dim = min(image_dims)
+            max_dim = max(image_dims)
             for layer in range(len(channels)-1):
-                min_dim //= ds
-            if min_dim > 1:
+                max_dim //= ds
+            if max_dim > 1:
                 raise ValueError("Invalid encoding CNN architecture; need more layers for downsampling purposes.")
             
             
         # figure out layer at which downsampling should stop:
         
+        # limit_layer = len(channels) - 2
+        # min_dim = min(image_dims)
+        # for layer in range(len(channels)):
+        #     if min_dim // ds < 1:
+        #         limit_layer = layer #- 1
+        #         break
+        #     min_dim //= ds
         limit_layer = len(channels) - 2
         min_dim = min(image_dims)
         for layer in range(len(channels)):
-            if min_dim // ds < 1:
+            if ds ** (layer) > min_dim:
                 limit_layer = layer - 1
                 break
-            min_dim //= ds
             
         
         # alter the kernel size and compute corresponding paddings
+        # note that a second kernel size might be needed for unity stride layers
 
         if ds == 2 and kernel_size % 2 != 0:
-            warnings.warn(f"Kernel size being made even ({kernel_size+1}) for downsampling factor of 2")
+            warnings.warn(f"Kernel size being made even ({kernel_size+1}) for downsampling factor of 2 in encoder")
             kernel_size += 1
         if ds == 3 and kernel_size % 2 == 0:
-            warnings.warn(f"Kernel size being made odd ({kernel_size-1}) for downsampling factor of 3")
+            warnings.warn(f"Kernel size being made odd ({kernel_size-1}) for downsampling factor of 3 in encoder")
             kernel_size -= 1
             
         pad = (kernel_size - ds) // 2
-        same_pad = (kernel_size) // 2
+        
+        if kernel_size % 2 == 0:
+            second_kernel = kernel_size - 1
+        else:
+            second_kernel = kernel_size
+
+        same_pad = (second_kernel - 1) // 2
         
         
         # construct network
@@ -111,7 +127,7 @@ class EncodingCNN(nn.Module):
                 net.append(nn.AdaptiveAvgPool2d(output_size=(1, 1)))
             if i > limit_layer:
                 net.append(
-                    nn.Conv2d(channels[i], channels[i + 1], kernel_size+1, padding=same_pad)
+                    nn.Conv2d(channels[i], channels[i + 1], second_kernel, padding=same_pad)
                 )
             if i < len(channels) - 2:
                 net.append(nonlinearity)
@@ -131,7 +147,10 @@ class DecodingCNN(nn.Module):
     """Represents a convolutional neural net (CNN) for specific use in the decoder of the VAE
 
     Args:
-
+        image_dims: the image dimensions
+        channels: the channels of each CNN layer
+        kernel_size: the size of kernel used for convolutions
+        nonlinearity: the choice of nonlinear activation function acting between layers
     """
 
     def __init__(
@@ -148,40 +167,46 @@ class DecodingCNN(nn.Module):
         
         # automatic upsamping factor determination (ideally 2 for smoothness):
         
-        if us**(len(channels)) < max(image_dims):  # allows the manual upsampling to have effective scale factor of at most 'us'
+        if us**(len(channels)) < min(image_dims):  # allows the manual upsampling to have effective scale factor of at most 'us'
             us = 3
-            if us**(len(channels)) < max(image_dims):  # allows the manual upsampling to have effective scale factor of at most 'us'
+            if us**(len(channels)) < min(image_dims):  # allows the manual upsampling to have effective scale factor of at most 'us'
                 raise ValueError("Invalid decoding CNN architecture; need more layers for upsampling purposes.")
 
 
         # figure out layer at which upsampling should stop:
         
         limit_layer = len(channels) - 2
-        max_dim = max(image_dims)
+        min_dim = min(image_dims)
         for layer in range(len(channels)):
-            if us ** (layer) > max_dim:
+            if us ** (layer) > min_dim:
                 limit_layer = layer - 1
                 break
             
         
         # alter the kernel size and compute corresponding paddings
+        # note that a second kernel size might be needed for unity stride layers
         
         if us == 2 and kernel_size % 2 != 0:
-            warnings.warn(f"Kernel size being made even ({kernel_size+1}) for upsampling factor of 2")
+            warnings.warn(f"Kernel size being made even ({kernel_size+1}) for upsampling factor of 2 in decoder")
             kernel_size += 1
         if us == 3 and kernel_size % 2 == 0:
-            warnings.warn(f"Kernel size being made odd ({kernel_size-1}) for upsampling factor of 3")
+            warnings.warn(f"Kernel size being made odd ({kernel_size-1}) for upsampling factor of 3 in decoder")
             kernel_size -= 1
             
         pad = (kernel_size - us) // 2
-        same_pad = (kernel_size) // 2
         
+        if kernel_size % 2 == 0:
+            second_kernel = kernel_size - 1
+        else:
+            second_kernel = kernel_size
+
+        same_pad = (second_kernel - 1) // 2
         
         # construct network
 
         net = []
         for i in range(len(channels) - 1):
-            if i <= limit_layer:
+            if i < limit_layer:
                 net.append(
                     nn.ConvTranspose2d(
                         channels[i],
@@ -193,10 +218,10 @@ class DecodingCNN(nn.Module):
                 )
             if i == limit_layer:
                 net.append(nn.Upsample(size=image_dims))
-            if i > limit_layer:
+            if i >= limit_layer:
                 net.append(
                     nn.ConvTranspose2d(
-                        channels[i], channels[i + 1], kernel_size+1, padding=same_pad
+                        channels[i], channels[i + 1], second_kernel, padding=same_pad
                     )
                 )
             if i < len(channels) - 2:

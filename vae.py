@@ -15,14 +15,20 @@ class VAE(nn.Module):
         image_dims: the image dimensions
         colour_channels: the number of colour channels in the image data
         latent_dim: the dimension of the latent variable/code
-        enc_hidden_dims: the architecture of the recognition model, excluding input and output layers
-        dec_hidden_dims: the architecture of the decoder, excluding input and output layers
-        q_form: the choice of variational posterior
-        likelihood: the choice of likelihood function
-        noise: the choice of hetero- or homo- scedastic noise if Gaussian likelihood
-        noise_log_std: the initial log standard deviation used if the noise is homoscedastic
+        enc_architecture: either 'cnn' or 'mlp' to define encoder architecture
+        dec_architecture: either 'cnn' or 'mlp' to define decoder architecture
+        enc_mlp_hidden_dims: the dimensions of the hidden layers of encoding MLP
+        enc_cnn_chans: the channels in each layer of the encoding CNN
+        dec_mlp_hidden_dims: the dimensions of the hidden layers of decoding MLP
+        dec_cnn_chans: the channels in each layer of the decoding CNN
+        kernel_size: the size of kernel used in encoding and decoding CNNs
+        posterior_form: the choice of variational posterior. See posteriors.py
+        likelihood: the choice of likelihood function. See likelihoods.py
+        noise: the choice of hetero- or homo- scedastic noise under a Gaussian likelihood
+        noise_std: the initial standard deviation used if the noise is homoscedastic
         train_noise: an option to train the homoscedastic noise variance
         prior_std: the std of the isotropic Guassian prior. User-defined hyperparameter
+        likelihood_activation: the activation function applied to mean of Gaussian likelihood 
         nonlinearity: the inter-layer activation function of encoding and decoding networks
     """
 
